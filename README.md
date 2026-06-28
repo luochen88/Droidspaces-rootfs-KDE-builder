@@ -47,6 +47,12 @@
 3. 点击 **Run workflow**，在弹出的可视化菜单中选择您需要的配置选项，然后运行。
 4. 等待约 10 分钟构建完成，前往 **Releases** 页面下载生成的 RootFS 压缩包，导入至 Droidspaces 即可使用。
 
+## 🔄 维护自己的 Fork 并同步上游
+
+本仓库已经内置 **同步 KDE 上游** workflow：默认每天检查 `Goldzxcbug/Droidspaces-rootfs-KDE-builder:main`，发现更新时创建 PR，不会直接覆盖 `main`。
+
+详细维护方法见：[docs/maintain-upstream.md](docs/maintain-upstream.md)
+
 ## ⚠️ 避坑指南与注意事项
 
 ### 🖥️ 系统与桌面环境配置

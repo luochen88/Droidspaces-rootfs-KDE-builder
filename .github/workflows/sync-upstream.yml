@@ -1,0 +1,174 @@
+name: 同步 KDE 上游
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_repo:
+        description: '要同步的上游仓库'
+        required: true
+        type: string
+        default: 'Goldzxcbug/Droidspaces-rootfs-KDE-builder'
+      upstream_branch:
+        description: '要同步的上游分支'
+        required: true
+        type: string
+        default: 'main'
+      target_branch:
+        description: '合入到本仓库的目标分支'
+        required: true
+        type: string
+        default: 'main'
+      mode:
+        description: '同步方式：pr=创建PR，direct=直接推送到目标分支'
+        required: true
+        type: choice
+        default: 'pr'
+        options:
+          - pr
+          - direct
+  schedule:
+    # 每天 UTC 20:30，北京时间 04:30 检查一次上游更新。
+    - cron: '30 20 * * *'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream-${{ github.event.inputs.target_branch || 'main' }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: 同步上游到 ${{ github.event.inputs.target_branch || 'main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出当前仓库
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.target_branch || 'main' }}
+
+      - name: 配置同步参数
+        id: vars
+        run: |
+          set -euo pipefail
+
+          upstream_repo='${{ github.event.inputs.upstream_repo }}'
+          upstream_branch='${{ github.event.inputs.upstream_branch }}'
+          target_branch='${{ github.event.inputs.target_branch }}'
+          mode='${{ github.event.inputs.mode }}'
+
+          # schedule 事件没有 inputs，使用默认值。
+          upstream_repo="${upstream_repo:-Goldzxcbug/Droidspaces-rootfs-KDE-builder}"
+          upstream_branch="${upstream_branch:-main}"
+          target_branch="${target_branch:-main}"
+          mode="${mode:-pr}"
+
+          sync_branch="sync/upstream-${upstream_branch}-$(date +'%Y%m%d-%H%M%S')"
+
+          echo "upstream_repo=$upstream_repo" >> "$GITHUB_OUTPUT"
+          echo "upstream_branch=$upstream_branch" >> "$GITHUB_OUTPUT"
+          echo "target_branch=$target_branch" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "sync_branch=$sync_branch" >> "$GITHUB_OUTPUT"
+
+          echo "上游仓库: $upstream_repo"
+          echo "上游分支: $upstream_branch"
+          echo "目标分支: $target_branch"
+          echo "同步模式: $mode"
+
+      - name: 获取上游并检查是否需要同步
+        id: check
+        env:
+          UPSTREAM_REPO: ${{ steps.vars.outputs.upstream_repo }}
+          UPSTREAM_BRANCH: ${{ steps.vars.outputs.upstream_branch }}
+          TARGET_BRANCH: ${{ steps.vars.outputs.target_branch }}
+        run: |
+          set -euo pipefail
+
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream "$UPSTREAM_BRANCH"
+          git fetch origin "$TARGET_BRANCH"
+
+          local_head="$(git rev-parse "origin/$TARGET_BRANCH")"
+          upstream_head="$(git rev-parse FETCH_HEAD)"
+          merge_base="$(git merge-base "origin/$TARGET_BRANCH" FETCH_HEAD)"
+
+          echo "本仓库 $TARGET_BRANCH: $local_head"
+          echo "上游 $UPSTREAM_REPO/$UPSTREAM_BRANCH: $upstream_head"
+          echo "共同祖先: $merge_base"
+
+          if [ "$local_head" = "$upstream_head" ]; then
+            echo "已经与上游一致，无需同步。"
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$merge_base" = "$upstream_head" ]; then
+            echo "本仓库已经包含上游提交，无需同步。"
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "检测到上游有新提交，需要同步。"
+          echo "needed=true" >> "$GITHUB_OUTPUT"
+
+      - name: 合并上游到同步分支
+        if: steps.check.outputs.needed == 'true'
+        env:
+          TARGET_BRANCH: ${{ steps.vars.outputs.target_branch }}
+          SYNC_BRANCH: ${{ steps.vars.outputs.sync_branch }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git switch -c "$SYNC_BRANCH" "origin/$TARGET_BRANCH"
+          git merge --no-edit FETCH_HEAD
+
+          echo "同步分支 $SYNC_BRANCH 合并完成。"
+
+      - name: 直接推送到目标分支
+        if: steps.check.outputs.needed == 'true' && steps.vars.outputs.mode == 'direct'
+        env:
+          TARGET_BRANCH: ${{ steps.vars.outputs.target_branch }}
+        run: |
+          set -euo pipefail
+          git push origin "HEAD:$TARGET_BRANCH"
+          echo "已直接推送到 $TARGET_BRANCH。"
+
+      - name: 推送同步分支并创建 PR
+        if: steps.check.outputs.needed == 'true' && steps.vars.outputs.mode == 'pr'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: ${{ steps.vars.outputs.target_branch }}
+          SYNC_BRANCH: ${{ steps.vars.outputs.sync_branch }}
+          UPSTREAM_REPO: ${{ steps.vars.outputs.upstream_repo }}
+          UPSTREAM_BRANCH: ${{ steps.vars.outputs.upstream_branch }}
+        run: |
+          set -euo pipefail
+
+          git push origin "$SYNC_BRANCH"
+
+          body=$(cat <<EOF
+          自动同步上游更新。
+
+          - 上游：$UPSTREAM_REPO:$UPSTREAM_BRANCH
+          - 目标分支：$TARGET_BRANCH
+          - 同步分支：$SYNC_BRANCH
+
+          合并这个 PR 后，主构建 workflow 会继续使用你的定制代码并包含上游更新。
+          EOF
+          )
+
+          gh pr create \
+            --base "$TARGET_BRANCH" \
+            --head "$SYNC_BRANCH" \
+            --title "sync: merge upstream $UPSTREAM_REPO/$UPSTREAM_BRANCH" \
+            --body "$body"
+
+      - name: 无需同步
+        if: steps.check.outputs.needed == 'false'
+        run: echo "当前分支已经包含上游更新。"
