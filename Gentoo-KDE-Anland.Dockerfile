@@ -389,17 +389,13 @@ RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
 # Set ownership of home directory
 RUN chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}
 
-# Final cleanup — strip all build-time cruft
+# Final cleanup — strip build-time cruft, keep docs and gentoo repo
 RUN rm -rf \
     /var/cache/distfiles/* \
     /var/tmp/portage/* \
     /var/cache/edb/* \
-    /var/db/repos/gentoo \
-    /usr/portage \
     /var/log/*.log \
-    /var/log/portage \
-    /usr/share/gtk-doc \
-    /usr/share/doc/*
+    /var/log/portage
 
 # Stage 2: Export to scratch for extraction
 FROM scratch AS export

@@ -164,8 +164,8 @@ fi
 echo "Post-extraction fixes applied on $(date)" > /etc/droidspaces
 EOF_RUN
 
-# Final cleanup — remove distfiles and package cache
-RUN rm -rf /var/cache/distfiles/* /var/db/repos/gentoo /usr/portage
+# Final cleanup — remove distfiles cache
+RUN rm -rf /var/cache/distfiles/* /var/tmp/portage/*
 
 # Stage 2: Export to scratch for extraction
 FROM scratch AS export

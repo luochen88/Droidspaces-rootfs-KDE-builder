@@ -286,20 +286,14 @@ RUN printf '[Unit]\nDescription=Start Plasma X11\nAfter=network.target dbus.serv
 # Set ownership of home directory
 RUN chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}
 
-# Final cleanup — strip all build-time cruft
+# Final cleanup — strip build-time cruft, keep docs and gentoo repo
 RUN rm -rf \
     /var/cache/distfiles/* \
     /var/cache/binpkgs/* \
     /var/tmp/portage/* \
     /var/cache/edb/* \
-    /var/db/repos/gentoo \
-    /usr/portage \
     /var/log/*.log \
     /var/log/portage \
-    /usr/share/gtk-doc \
-    /usr/share/doc/* \
-    /usr/share/man/* \
-    /usr/share/info/* \
     && find /usr/share/locale -mindepth 1 -maxdepth 1 ! -name 'en*' ! -name 'zh*' -exec rm -rf {} + \
     && find /usr/lib* -name '*.la' -delete \
     && find /usr/lib* -name '*.a' ! -name 'crt*.a' ! -name 'libpthread*.a' -delete \
