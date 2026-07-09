@@ -1,8 +1,17 @@
-name: Build Gentoo Base RootFS
+name: Build Gentoo Base / Minimal RootFS
 
 on:
   workflow_dispatch:
     inputs:
+      build_target:
+        description: '选择 Gentoo 变种'
+        required: true
+        type: choice
+        default: 'Gentoo-Base'
+        options:
+          - 'Gentoo-Base'
+          - 'Gentoo-Minimal'
+          - 'all'
       custom_username:
         description: 'RootFS username'
         required: false
@@ -49,13 +58,28 @@ on:
         default: '-j4'
 
 jobs:
-  build:
-    runs-on: ubuntu-24.04-arm
-    permissions:
-      contents: write
+  setup:
+    name: 解析构建目标
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.targets.outputs.targets }}
+      build_id: ${{ steps.meta.outputs.build_id }}
+      build_date: ${{ steps.meta.outputs.build_date }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - name: 生成构建矩阵
+        id: targets
+        run: |
+          set -euo pipefail
+          case "${{ inputs.build_target }}" in
+            all)
+              targets='["Gentoo-Base","Gentoo-Minimal"]'
+              ;;
+            *)
+              targets='["${{ inputs.build_target }}"]'
+              ;;
+          esac
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "Build targets: $targets"
 
       - name: Prepare metadata
         id: meta
@@ -64,11 +88,29 @@ jobs:
           echo "build_id=$build_id" >> "$GITHUB_OUTPUT"
           echo "build_date=$(date +'%Y-%m-%d %H:%M:%S')" >> "$GITHUB_OUTPUT"
 
-      - name: Build Gentoo base rootfs
+  build:
+    needs: setup
+    name: 构建 ${{ matrix.target }}
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.setup.outputs.targets) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build ${{ matrix.target }} rootfs
         run: |
           set -euo pipefail
-          temp_tar="custom-Gentoo-Base-rootfs.tar"
-          final_name="Gentoo-Base-Droidspaces-rootfs-aarch64-${{ steps.meta.outputs.build_id }}.tar.xz"
+          variant="${{ matrix.target }}"
+          dockerfile="${variant}.Dockerfile"
+          temp_tar="custom-${variant}-rootfs.tar"
+          final_name="${variant}-Droidspaces-rootfs-aarch64-${{ needs.setup.outputs.build_id }}.tar.xz"
+
+          echo "Building from: $dockerfile"
 
           docker buildx build \
             --platform linux/arm64 \
@@ -82,36 +124,52 @@ jobs:
             --build-arg ENABLE_binfmt_ARG="${{ inputs.enable_binfmt }}" \
             --build-arg GENTOO_COMMON_FLAGS="${{ inputs.gentoo_common_flags }}" \
             --build-arg GENTOO_MAKEOPTS="${{ inputs.gentoo_makeopts }}" \
-            -f Gentoo-Base.Dockerfile \
+            -f "$dockerfile" \
             .
 
-          tar -tf "$temp_tar" | grep -E '^(etc/droidspaces|usr/local/sbin/ds-apply-optimizations|etc/portage/make.conf|etc/environment)' | sort
+          # Verify key files for Base variant
+          if [ "$variant" = "Gentoo-Base" ]; then
+            tar -tf "$temp_tar" | grep -E '^(etc/droidspaces|usr/local/sbin/ds-apply-optimizations|etc/portage/make.conf|etc/environment)' | sort
+          fi
+
           xz -T0 -9 -f "$temp_tar"
           mv "${temp_tar}.xz" "$final_name"
           sha256sum "$final_name" > "${final_name}.sha256"
+          ls -lh "$final_name"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
-          name: gentoo-base-rootfs
+          name: ${{ matrix.target }}-rootfs
           path: |
-            Gentoo-Base-Droidspaces-rootfs-aarch64-*.tar.xz
-            Gentoo-Base-Droidspaces-rootfs-aarch64-*.sha256
+            Gentoo-*-Droidspaces-rootfs-aarch64-*.tar.xz
+            Gentoo-*-Droidspaces-rootfs-aarch64-*.sha256
           retention-days: 7
+
+  release:
+    needs: [setup, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "Gentoo-*-rootfs"
+          merge-multiple: true
 
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ steps.meta.outputs.build_id }}
-          name: Gentoo Base Droidspaces RootFS ${{ steps.meta.outputs.build_id }}
+          tag_name: ${{ needs.setup.outputs.build_id }}
+          name: Gentoo Droidspaces RootFS ${{ needs.setup.outputs.build_id }}
           files: |
-            Gentoo-Base-Droidspaces-rootfs-aarch64-*.tar.xz
-            Gentoo-Base-Droidspaces-rootfs-aarch64-*.sha256
+            Gentoo-*-Droidspaces-rootfs-aarch64-*.tar.xz
+            Gentoo-*-Droidspaces-rootfs-aarch64-*.sha256
           body: |
-            Gentoo Base Droidspaces RootFS
-            Build time: ${{ steps.meta.outputs.build_date }}
-
-            This build intentionally does not install KDE. It only provides a bootable Gentoo systemd base rootfs, Droidspaces compatibility rules, and an optimization injection entrypoint.
+            Gentoo Droidspaces RootFS
+            Build time: ${{ needs.setup.outputs.build_date }}
+            Target(s): ${{ join(fromJson(needs.setup.outputs.targets), ', ') }}
 
             Options:
             - username: ${{ inputs.custom_username }}
@@ -123,7 +181,7 @@ jobs:
             - initial COMMON_FLAGS: ${{ inputs.gentoo_common_flags }}
             - initial MAKEOPTS: ${{ inputs.gentoo_makeopts }}
 
-            After importing the rootfs, device-specific optimization can be injected by editing /etc/droidspaces/optimization.env and running ds-apply-optimizations.
+            After importing the rootfs, device-specific optimization can be injected by editing /etc/droidspaces/optimization.env and running ds-apply-optimizations (Base variant).
           draft: false
           prerelease: false
         env:

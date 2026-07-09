@@ -1,0 +1,28 @@
+[
+  {
+    "name": "Gentoo Linux - Minimal",
+    "distro": "Gentoo",
+    "description": "Minimal Gentoo Linux rootfs with systemd and basic packages. (Runs on Kernel 5.10 and above only).",
+    "architecture": "aarch64",
+    "file": "Gentoo-Minimal.Dockerfile",
+    "download_url": "https://github.com/luochen88/gentoo-droidspaces-rootfs/releases/download/v20260704-153821/Gentoo-Minimal-Droidspaces-rootfs-aarch64-20260704-v20260704-153821.tar.xz",
+    "sha256": "b3a818b1ddd64a6ac29424ca56ba5adb2f3f03e30835c7049bfd20c2e8359cd7",
+    "size_bytes": 376190208,
+    "version": "v20260704-153821",
+    "build_date": "20260704",
+    "author": "luochen88"
+  },
+  {
+    "name": "Gentoo Linux - Base",
+    "distro": "Gentoo",
+    "description": "Gentoo Linux rootfs with systemd, basic packages, development tools, Python, and Docker. (Runs on Kernel 5.10 and above only).",
+    "architecture": "aarch64",
+    "file": "Gentoo-base.Dockerfile",
+    "download_url": "https://github.com/luochen88/gentoo-droidspaces-rootfs/releases/download/v20260704-153821/Gentoo-base-Droidspaces-rootfs-aarch64-20260704-v20260704-153821.tar.xz",
+    "sha256": "65c4e9cfe8c721435ec78e11ace2376baac2fbbdeeaa35b7d827a9aadc4e8891",
+    "size_bytes": 856300384,
+    "version": "v20260704-153821",
+    "build_date": "20260704",
+    "author": "luochen88"
+  }
+]
