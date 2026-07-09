@@ -1,0 +1,164 @@
+name: Build Gentoo KDE RootFS
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_target:
+        description: '选择 Gentoo KDE 变种'
+        required: true
+        type: choice
+        default: 'Gentoo-KDE'
+        options:
+          - 'Gentoo-KDE'
+          - 'Gentoo-KDE-Anland'
+          - 'all'
+      pulseaudio:
+        description: 'PulseAudio 音频转发模式'
+        required: true
+        type: choice
+        default: 'socket'
+        options:
+          - socket
+          - tcp
+          - none
+      enable_zh:
+        description: '启用中文语言和 Asia/Shanghai 时区'
+        required: true
+        type: boolean
+        default: true
+      enable_dev:
+        description: '安装开发工具（GCC, Clang, CMake, Python, strace）'
+        required: true
+        type: boolean
+        default: false
+      enable_gpu:
+        description: '启用高通骁龙 GPU 支持（仅 Gentoo-KDE-Anland）'
+        required: true
+        type: boolean
+        default: true
+      custom_username:
+        description: 'RootFS 用户名'
+        required: false
+        type: string
+        default: 'Gold'
+
+jobs:
+  setup:
+    name: 解析构建目标
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.targets.outputs.targets }}
+      build_id: ${{ steps.meta.outputs.build_id }}
+      build_date: ${{ steps.meta.outputs.build_date }}
+    steps:
+      - name: 生成构建矩阵
+        id: targets
+        run: |
+          set -euo pipefail
+          case "${{ inputs.build_target }}" in
+            all)
+              targets='["Gentoo-KDE","Gentoo-KDE-Anland"]'
+              ;;
+            *)
+              targets='["${{ inputs.build_target }}"]'
+              ;;
+          esac
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "Build targets: $targets"
+
+      - name: 准备构建元数据
+        id: meta
+        run: |
+          build_id="gentoo-kde-v$(date +'%Y%m%d-%H%M%S')"
+          echo "build_id=$build_id" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date +'%Y-%m-%d %H:%M:%S')" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: setup
+    name: 构建 ${{ matrix.target }}
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.setup.outputs.targets) }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 构建 RootFS（${{ matrix.target }}）
+        run: |
+          set -euo pipefail
+          variant="${{ matrix.target }}"
+          dockerfile="${variant}.Dockerfile"
+          build_id="${{ needs.setup.outputs.build_id }}"
+          temp_tar="custom-${variant}-rootfs.tar"
+          final_name="${variant}-Droidspaces-rootfs-aarch64-${build_id}.tar.xz"
+
+          echo "Building from: $dockerfile"
+          echo "Final output: $final_name"
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --target export \
+            --output type=tar,dest="$temp_tar" \
+            --build-arg USERNAME="${{ inputs.custom_username }}" \
+            --build-arg PulseAudio="${{ inputs.pulseaudio }}" \
+            --build-arg ENABLE_zh="${{ inputs.enable_zh }}" \
+            --build-arg ENABLE_dev="${{ inputs.enable_dev }}" \
+            --build-arg ENABLE_gpu="${{ inputs.enable_gpu }}" \
+            -f "$dockerfile" \
+            .
+
+          echo "Compressing with xz..."
+          xz -T0 -9 -f "$temp_tar"
+          mv "${temp_tar}.xz" "$final_name"
+          sha256sum "$final_name" > "${final_name}.sha256"
+          ls -lh "$final_name"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.target }}-rootfs
+          path: |
+            Gentoo-*-Droidspaces-rootfs-aarch64-*.tar.xz
+            Gentoo-*-Droidspaces-rootfs-aarch64-*.sha256
+          retention-days: 7
+
+  release:
+    needs: [setup, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 下载所有产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "Gentoo-KDE*-rootfs"
+          merge-multiple: true
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.setup.outputs.build_id }}
+          name: Gentoo KDE Droidspaces RootFS ${{ needs.setup.outputs.build_id }}
+          files: |
+            Gentoo-*-Droidspaces-rootfs-aarch64-*.tar.xz
+            Gentoo-*-Droidspaces-rootfs-aarch64-*.sha256
+          body: |
+            Gentoo KDE Droidspaces RootFS
+
+            Build time: ${{ needs.setup.outputs.build_date }}
+            Target(s): ${{ join(fromJson(needs.setup.outputs.targets), ', ') }}
+
+            Options:
+            - Username: ${{ inputs.custom_username }}
+            - PulseAudio: ${{ inputs.pulseaudio }}
+            - zh_CN/timezone: ${{ inputs.enable_zh }}
+            - Development tools: ${{ inputs.enable_dev }}
+            - GPU support: ${{ inputs.enable_gpu }}
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

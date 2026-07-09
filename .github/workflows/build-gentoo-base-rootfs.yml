@@ -1,0 +1,188 @@
+name: Build Gentoo Base / Minimal RootFS
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_target:
+        description: '选择 Gentoo 变种'
+        required: true
+        type: choice
+        default: 'Gentoo-Base'
+        options:
+          - 'Gentoo-Base'
+          - 'Gentoo-Minimal'
+          - 'all'
+      custom_username:
+        description: 'RootFS username'
+        required: false
+        type: string
+        default: 'Gold'
+      enable_zh_tz:
+        description: 'Enable zh_CN.UTF-8 and Asia/Shanghai timezone'
+        required: true
+        type: boolean
+        default: true
+      enable_mesa:
+        description: 'Inject Snapdragon KGSL/Mesa runtime environment variables'
+        required: true
+        type: boolean
+        default: true
+      enable_yj:
+        description: 'Enable Droidspaces hardware/network recognition systemd rules'
+        required: true
+        type: boolean
+        default: true
+      enable_binfmt:
+        description: 'Include Droidspaces binfmt service files'
+        required: true
+        type: boolean
+        default: false
+      pulseaudio:
+        description: 'PulseAudio forwarding mode'
+        required: true
+        type: choice
+        default: 'socket'
+        options:
+          - socket
+          - tcp
+          - none
+      gentoo_common_flags:
+        description: 'Initial Gentoo COMMON_FLAGS; can be replaced later inside rootfs'
+        required: false
+        type: string
+        default: '-O2 -pipe -march=armv8-a'
+      gentoo_makeopts:
+        description: 'Initial Gentoo MAKEOPTS; can be replaced later inside rootfs'
+        required: false
+        type: string
+        default: '-j4'
+
+jobs:
+  setup:
+    name: 解析构建目标
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.targets.outputs.targets }}
+      build_id: ${{ steps.meta.outputs.build_id }}
+      build_date: ${{ steps.meta.outputs.build_date }}
+    steps:
+      - name: 生成构建矩阵
+        id: targets
+        run: |
+          set -euo pipefail
+          case "${{ inputs.build_target }}" in
+            all)
+              targets='["Gentoo-Base","Gentoo-Minimal"]'
+              ;;
+            *)
+              targets='["${{ inputs.build_target }}"]'
+              ;;
+          esac
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "Build targets: $targets"
+
+      - name: Prepare metadata
+        id: meta
+        run: |
+          build_id="gentoo-base-v$(date +'%Y%m%d-%H%M%S')"
+          echo "build_id=$build_id" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date +'%Y-%m-%d %H:%M:%S')" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: setup
+    name: 构建 ${{ matrix.target }}
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.setup.outputs.targets) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build ${{ matrix.target }} rootfs
+        run: |
+          set -euo pipefail
+          variant="${{ matrix.target }}"
+          dockerfile="${variant}.Dockerfile"
+          temp_tar="custom-${variant}-rootfs.tar"
+          final_name="${variant}-Droidspaces-rootfs-aarch64-${{ needs.setup.outputs.build_id }}.tar.xz"
+
+          echo "Building from: $dockerfile"
+
+          docker buildx build \
+            --platform linux/arm64 \
+            --target export \
+            --output type=tar,dest="$temp_tar" \
+            --build-arg USERNAME="${{ inputs.custom_username }}" \
+            --build-arg PulseAudio="${{ inputs.pulseaudio }}" \
+            --build-arg ENABLE_zh_tz_ARG="${{ inputs.enable_zh_tz }}" \
+            --build-arg ENABLE_yj_ARG="${{ inputs.enable_yj }}" \
+            --build-arg ENABLE_mesa_ARG="${{ inputs.enable_mesa }}" \
+            --build-arg ENABLE_binfmt_ARG="${{ inputs.enable_binfmt }}" \
+            --build-arg GENTOO_COMMON_FLAGS="${{ inputs.gentoo_common_flags }}" \
+            --build-arg GENTOO_MAKEOPTS="${{ inputs.gentoo_makeopts }}" \
+            -f "$dockerfile" \
+            .
+
+          # Verify key files for Base variant
+          if [ "$variant" = "Gentoo-Base" ]; then
+            tar -tf "$temp_tar" | grep -E '^(etc/droidspaces|usr/local/sbin/ds-apply-optimizations|etc/portage/make.conf|etc/environment)' | sort
+          fi
+
+          xz -T0 -9 -f "$temp_tar"
+          mv "${temp_tar}.xz" "$final_name"
+          sha256sum "$final_name" > "${final_name}.sha256"
+          ls -lh "$final_name"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.target }}-rootfs
+          path: |
+            Gentoo-*-Droidspaces-rootfs-aarch64-*.tar.xz
+            Gentoo-*-Droidspaces-rootfs-aarch64-*.sha256
+          retention-days: 7
+
+  release:
+    needs: [setup, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "Gentoo-*-rootfs"
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.setup.outputs.build_id }}
+          name: Gentoo Droidspaces RootFS ${{ needs.setup.outputs.build_id }}
+          files: |
+            Gentoo-*-Droidspaces-rootfs-aarch64-*.tar.xz
+            Gentoo-*-Droidspaces-rootfs-aarch64-*.sha256
+          body: |
+            Gentoo Droidspaces RootFS
+            Build time: ${{ needs.setup.outputs.build_date }}
+            Target(s): ${{ join(fromJson(needs.setup.outputs.targets), ', ') }}
+
+            Options:
+            - username: ${{ inputs.custom_username }}
+            - zh_CN/timezone: ${{ inputs.enable_zh_tz }}
+            - Snapdragon KGSL/Mesa env: ${{ inputs.enable_mesa }}
+            - Droidspaces hardware/network rules: ${{ inputs.enable_yj }}
+            - binfmt service files: ${{ inputs.enable_binfmt }}
+            - PulseAudio: ${{ inputs.pulseaudio }}
+            - initial COMMON_FLAGS: ${{ inputs.gentoo_common_flags }}
+            - initial MAKEOPTS: ${{ inputs.gentoo_makeopts }}
+
+            After importing the rootfs, device-specific optimization can be injected by editing /etc/droidspaces/optimization.env and running ds-apply-optimizations (Base variant).
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
